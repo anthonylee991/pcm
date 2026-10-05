@@ -5,13 +5,7 @@
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "test": "bun test",
-    "benchmark": "bun run src/evals/architectural-sim.ts",
-    "benchmark:live": "bun run src/evals/live-harness.ts",
-    "benchmark:human": "bun run src/evals/human-benchmark.ts",
-    "benchmark:standard": "bun run src/evals/standard-benchmarks.ts",
-    "benchmark:full": "bun run src/evals/full-live-evaluation.ts",
-    "benchmark:conversational": "bun run src/evals/conversational-live-benchmark.ts"
+    "test": "bun test"
   },
   "keywords": [
     "ai",

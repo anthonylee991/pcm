@@ -1,377 +1,277 @@
 # Peripheral Cognitive Mesh (PCM): A Biologically-Inspired Memory Architecture for Autonomous AI Agents
 
 **Technical Specification & Whitepaper**  
-*Version 1.0 — September 2026*  
+*Version 2.0 — October 2026*  
 *SkillVault Research & Engineering*
 
 ---
 
 ## Abstract
 
-Existing approaches to agentic AI memory treat persistent state as an external document search problem—relying on naive dense vector retrieval (RAG), keyword matching (BM25), or expensive multi-hop knowledge graph queries (Graph RAG). In practice, these architectures fail in interactive software engineering workflows: they exhibit catastrophic temporal amnesia (unable to distinguish deprecated decisions from current architecture), pollute model attention windows with unstructured text chunks (the "context window tax"), and introduce prohibitive retrieval latencies (300ms to 8,000ms per agent turn).
+Most agent memory systems treat persistent state as a document search problem: embed past messages, retrieve the nearest chunks, and place them in the prompt. Search quality matters enormously, and it is the first thing any memory system must get right. But search alone has no lifecycle (it cannot tell a replaced decision from a current one, and it either grows without bound or forgets destructively), no attention (it does not tell the agent what is out of the ordinary), and no sense of absence (it cannot surface a routine that has stopped).
 
-We introduce the **Peripheral Cognitive Mesh (PCM)**, a biologically-inspired floating memory architecture designed specifically for interactive coding agents and multi-device workflows. PCM abandons the document retrieval paradigm in favor of **attentional cognitive priming**. It integrates:
-1. **Mathematical Ebbinghaus decay** with reinforcement-driven savings dynamics, allowing transient operational noise to fade naturally while preserving vital decisions.
-2. **Pinned golden guardrails** ($S = 1.0$), ensuring immutable architectural standards and developer preferences are never forgotten.
-3. An **emergent associative graph** derived from vector geometry with geometric stickiness ($W_{ij} = \text{baseSim}_{ij} \cdot \sqrt{S_i \cdot S_j}$), featuring zero-latency background spreading activation.
-4. **Peripheral Attention Engineering (PAE)**, which formats retrieved knowledge into disciplined, token-budgeted prompt slots (`[ASKER CONTEXT]`, `[SITUATIONAL CONTEXT]`, `[DIRECT ANSWER]`, and `[ANOMALY FLAGS]`).
-5. A **sub-25ms latency profile** achieved via conditional margin heuristics, in-memory guardrail caching, and non-blocking asynchronous mutation dispatch.
+The **Peripheral Cognitive Mesh (PCM)** is the memory architecture behind SkillVault's MemVault. It combines high-quality retrieval (dense vectors, a neural reranker, knowledge-graph links and episode context) with a cognitive layer:
 
-Empirical evaluation across golden benchmarks demonstrates that PCM achieves a **100% Hit Rate @ 1**, **1.000 Mean Reciprocal Rank (MRR)**, reduces context window consumption by **85%**, and completely eliminates temporal contradictions where traditional RAG fails in 40–50% of cases.
+1. **Ebbinghaus decay with a savings effect**, where recall reinforces a memory and slows its future decay.
+2. **Pinned guardrails** ($S = 1.0$) that never decay and are always delivered.
+3. **Recall-time spreading activation** that keeps the neighbours of recalled memories alive.
+4. **Consolidation and demotion** instead of deletion.
+5. **Surprisal and absence detection**: memories that break the pattern of their routine, and routines that have gone quiet, are raised as anomaly flags.
+6. **Peripheral Attention Engineering (PAE)**: memory delivered in structured slots (`[ANOMALY FLAGS]`, `[ASKER CONTEXT]`, `[SITUATIONAL CONTEXT]`).
+
+On the held-out LoCoMo test split (885 questions), MemVault scores **91.9%** with its default high-context recall (about 2,800 context tokens), against 93.7% with the entire conversation in context. Run through the same harness, Mem0's cloud product scores 89.9% at 6,771 tokens (p = 0.11, not significant). In a 180-day lifecycle simulation, forgetting by demotion preserves accuracy (86.0% vs 85.7% for a fresh store) where deletion loses a quarter of it (60.6%). On a synthetic test of personal routines, anomaly flags raise the share of answers that account for an out-of-the-ordinary event from 35.4% to 60.4% (p = 0.012) and for a stopped routine from 4.5% to 54.5% (p = 0.001).
 
 ---
 
 ## 1. Introduction: The Document Retrieval Fallacy
 
-Autonomous software engineering agents (such as Claude Code, Cursor, Windsurf, Aider, and local CLI harnesses) require continuous cross-session context to write correct code. Today, developers work across fragmented surfaces: brainstorming on mobile LLMs during a commute, editing in desktop IDEs, executing terminal commands, and deploying via CI/CD.
+Autonomous agents (Claude Code, Cursor, Windsurf, custom harnesses, personal assistants) need continuous context across sessions and devices. The industry default is to adapt **Retrieval-Augmented Generation (RAG)** as "agent memory". RAG was designed for question answering over static corpora. Applied unchanged to an agent's evolving experience, it has three structural problems.
 
-To bridge this divide, the industry has predominantly adapted **Retrieval-Augmented Generation (RAG)** as "agent memory." This represents a fundamental category error. RAG was designed for document question-answering over static corpuses (e.g., querying PDF manuals). When misapplied as agent memory, it creates three catastrophic failure modes:
-
-### 1.1 Temporal Amnesia and Deprecation Blindness
-RAG indexes memories as static vectors. If a team decides in January:
+### 1.1 Temporal blindness
+If a team decides in January:
 > *"Use UUIDv4 for all public API endpoints."*
 
-and subsequently refactors in March:
+and refactors in March:
 > *"Migrated from UUIDv4 to ULIDs for B-tree index locality."*
 
-a query in April regarding *"What ID format should I generate?"* yields high cosine similarity for **both** statements. Because naive vector search and BM25 have no mathematical model of elapsed time or reinforcement, agents flip a coin or hallucinate conflicting patterns.
+a query in April about *"What ID format should I generate?"* is similar to **both** statements. Similarity search has no model of supersession, reinforcement or relevance over time.
 
-### 1.2 The Context Window Tax (Attention Dilution)
-Document retrieval dumps unstructured, multi-paragraph text chunks into the prompt context. This consumes 2,000 to 4,000 tokens per interaction turn, introducing significant cost overhead, increasing time-to-first-token (TTFT), and triggering the psychological "lost in the middle" degradation where models overlook critical instructions sandwiched between verbose conversational transcripts.
+### 1.2 No attention
+A list of retrieved memories is flat. An out-of-the-ordinary entry (a much longer commute, a symptom during a run, a bill twice the usual size) looks like every other line, and agents frequently overlook it even when it is in their context. Nor can a list show what is missing: a weekly routine that stopped a month ago leaves nothing to retrieve.
 
-### 1.3 The Latency Bottleneck
-In interactive agent loops, memory recall is a **pre-flight blocking operation**. An agent cannot generate its first code token until memory retrieval completes. Naive RAG with external embedding calls takes 200–300ms; Hybrid RAG with cross-encoders takes 400–600ms; Graph RAG requiring LLM-driven graph traversals takes 2,000–8,000ms. These pauses interrupt developer flow state and make ambient pair-programming feel sluggish.
+### 1.3 No lifecycle
+A store that keeps everything at full weight accumulates noise in every recall; a store that deletes old entries loses evidence that may be needed later. Neither behaves like memory.
 
-PCM was engineered from first principles to resolve these limitations.
+PCM keeps retrieval as its foundation and adds the missing layers.
 
 ---
 
-## 2. Theoretical Architecture
-
-PCM treats agent memory not as a static document archive, but as an active **biological cognitive field**. Knowledge exists in varying states of activation, decay, and interconnectedness.
+## 2. Architecture
 
 ```
-               ┌───────────────────────────────┐
-               │  INGESTION & STAMPING         │
-               │  • Hash Bypass (< 2ms)        │
-               │  • Importance Tiering         │
-               │    (Pinned / High / Default)  │
-               └──────────────┬────────────────┘
-                              │
-                              ▼
-               ┌───────────────────────────────┐
-               │  SHORT-TERM MEMORY (STM)      │
-               │  • pgvector HNSW (1024-dim)   │
-               │  • Monotone Vector Clock      │
-               └──────────────┬────────────────┘
-                              │
-                    Semantic Similarity ≥ 0.65
-                              │
-                              ▼
-               ┌───────────────────────────────┐
-               │  EMERGENT ASSOCIATIVE MESH    │
-               │  • Vector Graph Materialized  │
-               │  • Spreading Activation Wave  │
-               │    (+10% Boost to Neighbors)  │
-               └──────────────┬────────────────┘
-                              │
-                              ▼
-               ┌───────────────────────────────┐
-               │  EBBINGHAUS COGNITIVE DECAY   │
-               │  • S(t) = S₀ · e^(-t / τ)     │
-               │  • Savings Effect Multiplier  │
-               │  • Autonomous Sweeper Pruning │
-               └──────────────┬────────────────┘
-                              │
-                              ▼
-               ┌───────────────────────────────┐
-               │  PERIPHERAL ATTENTION ENGINE  │
-               │  • [USER QUERY]               │
-               │  • [DIRECT ANSWER]            │
-               │  • [ANOMALY FLAGS]            │
-               │  • [ASKER CONTEXT]            │
-               │  • [SITUATIONAL CONTEXT]      │
-               └───────────────────────────────┘
+            INGEST                                     RECALL
+  ┌──────────────────────────┐          ┌────────────────────────────────────┐
+  │ exact / near-duplicate    │          │ query embedding  ║  graph lookup   │
+  │ check (same figures only) │          │ (768-d)          ║  (entity-linked │
+  │ importance tier           │          │        │         ║   memories)     │
+  │ embedding (768-d halfvec) │          │        ▼         ║                 │
+  │ async graph extraction    │          │ HNSW candidates (2k, >= 50)        │
+  └────────────┬─────────────┘          │ + graph-linked memories            │
+               ▼                         │        │                           │
+  ┌──────────────────────────┐          │        ▼                           │
+  │ BACKGROUND (cron)         │          │ neural reranker, relevance floor  │
+  │ • decay sweep             │          │        │                           │
+  │ • consolidation           │          │        ▼                           │
+  │ • demotion (not deletion) │          │ cognitive score: relevance,        │
+  │ • vector + graph repair   │          │ cue-reactivated strength,          │
+  │ • surprisal sweep (2 min) │          │ graph links, project scope         │
+  └──────────────────────────┘          │        │                           │
+                                         │        ▼                           │
+                                         │ top k + episode context            │
+                                         │ + surprisal / absence flags        │
+                                         │        │                           │
+                                         │        ▼                           │
+                                         │ PAE slots → agent                  │
+                                         │ (side effects: reinforcement,      │
+                                         │  spreading activation)             │
+                                         └────────────────────────────────────┘
 ```
 
-### 2.1 Ebbinghaus Decay & The Savings Effect
-Human memory prioritizes recent, reinforced thoughts over ephemeral noise. PCM adopts the biological forgetting curve formulated by Hermann Ebbinghaus, modified by the cognitive **Savings Effect** (relearning and repeated retrieval increases structural durability).
+### 2.1 Ebbinghaus decay and the savings effect
+Every non-pinned memory carries a strength $S \in (0, 1]$ that decays exponentially with time. Each recall reinforces it and lengthens its effective half-life (the savings effect), so memories that keep mattering stay strong and transient noise fades.
 
-- Transient debugging logs, ephemeral scratchpads, and trial-and-error naturally fade toward baseline zero ($S \to 0.01$).
-- Repeatedly recalled decisions build structural resistance to decay, extending their effective half-life.
-- Dead-weight memories that fall below threshold ($S \le 0.02$) and remain unretrieved for $>90$ days are automatically reaped by background sweeps.
+### 2.2 Pinned guardrails
+Architectural invariants, security policies, stack constraints and core preferences are **pinned**: their strength is fixed at 1.0, they are cached in memory, and they are delivered in `[ASKER CONTEXT]` on every recall whether or not the query mentions them.
 
-### 2.2 Pinned Guardrails (Strength 1.0)
-Certain knowledge must never decay: architectural invariants, security policies, stack constraints, and core developer preferences. PCM introduces an explicit `pinned` importance tier. Pinned memories are mathematically exempt from decay ($S \equiv 1.0$), cached in-memory, and guaranteed prompt injection under the `[ASKER CONTEXT]` slot.
+### 2.3 Spreading activation
+When memories are recalled, their nearest associates are reinforced in the background: up to four similarity neighbours ($\cos \ge 0.65$) of each of the top five recalled memories, plus memories from the same episode (saved within 60 minutes, weighted 0.7). Associates are computed at recall time, so no edge table is stored. Spreading activation does not change the current answer; it keeps related evidence alive against decay.
 
-### 2.3 Emergent Associative Mesh
-Graph RAG architectures rely on expensive LLM calls at ingestion time to parse text into rigid subject-predicate-object ontologies, followed by slow graph traversals at query time.
+### 2.4 Consolidation and demotion
+Clusters of related short-term memories are consolidated into a long-term record that recall can use as a whole episode. Memories whose strength falls below threshold and that have not been recalled for 90 days are **demoted** (state `archived`): they no longer compete by default but remain searchable. Nothing is deleted by forgetting.
 
-PCM abandons manual ontology extraction. Instead, graph edges emerge **organically from vector space geometry**. When memories exhibit vector cosine similarity $\ge 0.65$, bidirectional edges are materialized. When a memory is activated during recall, an activation wave pulses through the mesh, boosting the strength of 1-hop neighbor nodes by **10%** in the background. Related concepts are primed for subsequent conversation turns with **zero query-time graph traversal overhead**.
+### 2.5 Episode context
+Single memories rarely answer a question on their own. For the top recalled memories (one per ten requested), recall adds up to three neighbouring memories on each side from the same episode (saved within 60 minutes), in time order and de-duplicated.
 
-### 2.4 Autonomous Consolidation (STM $\to$ LTM)
-Memory cannot accumulate indefinitely without dilution. PCM partitions memory into Short-Term Memory (STM) and Long-Term Memory (LTM). When an autonomous background cron detects $\ge 3$ active STM items within a single project scope, an LLM summarizer distills the cluster into a single, high-density LTM architectural invariant (assigned $S = 1.0$), while transitioning the detailed constituent STM records to `archived`.
+### 2.6 Knowledge graph
+Each memory is processed by an extraction model into typed entities (13 types: Person, Organization, Place, Event, Activity, Work, Product, Animal, Technology, Project, Concept, Decision, Time) and relations from a closed set of 25 families (KNOWS, FAMILY_OF, DOES, VISITED, LIKES, USES, DEPENDS_ON, REPLACES, DECIDED, ...). Facts are stored in Kùzu, one physically separate database per tenant. At recall, memories linked to the query's entities receive a score bonus proportional to the strength of the link. A repair job re-extracts any memory whose facts are missing from the graph.
 
----
+### 2.7 Surprisal and absence
+A **family** is the set of earlier memories that share a memory's statistical shape: up to 12 earlier memories with $\cos \ge 0.45$, at least four of them. A background sweep asks a small model whether the new memory departs from its family's pattern (an unusual value, a different place, person or product, or something qualitatively different) and stores a score, a note on what is different, the usual pattern, and the family members. At recall:
 
-## 3. Mathematical Formulations
+- a surprising memory ($\text{score} \ge 0.7$) is flagged when it, or any member of its family, was recalled, ranked by the best recalled position of the memory or its family;
+- a regular routine of a top recalled memory that has gone quiet is flagged with the date of its last entry and its usual interval.
 
-### 3.1 Memory Strength Function
-Let $S_0 \in (0, 1.0]$ denote the initial strength stamped at ingestion based on importance classification:
+### 2.8 Peripheral Attention Engineering (PAE)
+Recall returns structured slots instead of raw chunks:
 
-$$S_0 = \begin{cases} 
-1.0 & \text{if } \text{importance} = \text{pinned} \\ 
-0.8 & \text{if } \text{importance} = \text{high} \\ 
-0.4 & \text{if } \text{importance} = \text{default} 
-\end{cases}$$
+- `[ANOMALY FLAGS — PAY ATTENTION]`: surprising memories and stopped routines, each with what is out of the ordinary and what is usual (up to five).
+- `[ASKER CONTEXT]`: pinned rules and preferences (up to five).
+- `[SITUATIONAL CONTEXT]`: the recalled memories with their dates.
 
-For non-pinned memories, strength decays exponentially over elapsed time $t$ (in days):
-
-$$S(t) = \max\left(0.01, \; \min\left(1.0, \; S_0 \cdot \exp\left(-\frac{t}{\tau}\right)\right)\right)$$
-
-The decay time constant $\tau$ incorporates the **Savings Effect Multiplier**, scaled by prior retrieval count $n$:
-
-$$T_{\text{eff}} = T_{\text{decay}} \cdot \left(1 + 0.25 \cdot \min(n, 20)\right) \quad \text{where } T_{\text{decay}} = 90 \text{ days}$$
-
-$$\tau = \frac{T_{\text{eff}}}{3}$$
-
-*Proof*: When $n = 0$, $\tau = 30$. At $t = 90$ days, $\exp(-90 / 30) = \exp(-3) \approx 0.0498$ (memory decays to $\approx 5\%$ of original strength). When $n = 20$, $T_{\text{eff}} = 90 \cdot (1 + 5) = 540$ days, increasing structural half-life sixfold.
-
-### 3.2 Logarithmic Retrieval Boost
-Upon memory retrieval, strength is replenished according to diminishing marginal utility:
-
-$$\Delta S = \alpha \cdot \ln(1 + n_{\text{window}}) \quad (\alpha = 0.17)$$
-
-$$S_{\text{new}} = \min(1.0, \; S_{\text{current}} + \Delta S)$$
-
-### 3.3 Associative Edge Weight
-Given two memories $m_i$ and $m_j$ with dense vector cosine similarity $\text{sim}(v_i, v_j) \ge 0.65$, the materialized edge weight $W_{ij}$ balances semantic proximity with the geometric mean of their respective cognitive strengths:
-
-$$W_{ij} = \text{sim}(v_i, v_j) \cdot \sqrt{S_i \cdot S_j}$$
-
-When $m_i$ is recalled, activation spreads to top connected neighbors $m_j$:
-
-$$S_j \leftarrow \min\left(1.0, \; S_j + 0.10 \cdot \Delta S_i\right)$$
-
-### 3.4 Multi-Factor Cognitive Scoring Function
-During recall, candidates retrieved from dense vector search are re-ranked using a four-factor formulation balancing semantic relevance, cognitive durability, recency, and project scope:
-
-$$\text{Score}(m, q) = w_{\text{sim}} \cdot \text{Sim}(m, q) + w_{\text{str}} \cdot \hat{S}(m) + w_{\text{rec}} \cdot R(m) + \text{Bonus}_{\text{scope}}$$
-
-Where:
-- $w_{\text{sim}} = 0.60$, $w_{\text{str}} = 0.25$, $w_{\text{rec}} = 0.15$
-- Normalized strength: $\hat{S}(m) = \frac{\min(0.3, S(m))}{0.3}$
-- Temporal recency: $R(m) = \exp\left(-\frac{\text{AgeDays}}{30}\right)$ (halves every 30 days)
-- $\text{Bonus}_{\text{scope}} = 0.10$ if $m.\text{project} = q.\text{project}$, else $0.0$
-
-### 3.5 Margin Heuristic for Conditional Neural Reranking
-To eliminate the 150ms–400ms latency penalty of neural cross-encoders (`qwen3-rerank` / BGE-reranker) on unambiguous queries, PCM defines a decision function $\mathcal{H}$:
-
-$$\mathcal{H}(\mathbf{s}) = \begin{cases} 
-\text{False (Bypass)} & \text{if } |\mathbf{s}| \le 1 \\
-\text{False (Bypass)} & \text{if } s_{(1)} \ge 0.88 \\
-\text{False (Bypass)} & \text{if } (s_{(1)} - s_{(2)}) \ge 0.15 \\
-\text{True (Invoke)}  & \text{otherwise}
-\end{cases}$$
-
-where $s_{(1)}$ and $s_{(2)}$ represent the highest and second-highest candidate vector similarities.
+An empty result is reported explicitly ("No relevant memories found") rather than padded with weak matches.
 
 ---
 
-## 4. System Implementation & Latency Engineering
+## 3. Mathematical Formulation
 
-To achieve production viability for interactive IDEs, PCM implements a strict sub-25ms latency budget on recall and sub-10ms on ingestion.
+### 3.1 Memory strength
+Initial strength by importance:
 
-```
-RECALL PIPELINE (< 25ms P95)
-[Agent Query] 
-   │
-   ├─▶ [RAM] Pinned Guardrails LRU Cache                  (< 0.5ms)  ──▶ [ASKER CONTEXT]
-   │
-   ├─▶ [Local/Edge] Dense Vector Embedding                (< 15ms)
-   │
-   ├─▶ [DB] PostgreSQL HNSW Search (ef_search = 32)       (< 5ms)
-   │
-   ├─▶ [Fast-Path] Heuristic Reranker Gate                (< 0.1ms)
-   │
-   ├─▶ [In-Memory] Cognitive Scoring Function             (< 0.5ms)  ──▶ [SITUATIONAL CONTEXT]
-   │
-   └─▶ [HTTP Return to Agent]                             Total: ~22ms
-         │
-         └─▶ [Background Microtask] Detached Side-Effects
-               • Single-query batched strength updates
-               • Spreading activation graph pulses
-               • Retrieval audit logging
-```
+$$S_0 = \begin{cases} 1.0 & \text{pinned} \\ 0.8 & \text{high} \\ 0.4 & \text{default} \end{cases}$$
 
-### 4.1 Ingestion Fast-Paths
-- **Exact-Match Bypass**: Incoming memories query `mv_memories` by exact text hash. Identical repeats update timestamps and boost strength in **< 2ms**, completely skipping embedding inference.
-- **Vectorized Ingest**: Multi-item ingestion payloads (`ingestBatch`, `session-wrap`, `transcript`) embed all candidate texts in a single batch API call, eliminating $N-1$ network roundtrips.
-- **Optimistic Async Mode**: Terminal git commit hooks insert the database row immediately to guarantee ACID persistence, returning `201 Created` in **< 10ms**, while vector generation and graph indexing execute in background microtasks.
+For non-pinned memories, after $t$ days without reinforcement:
 
-### 4.2 Two-Stage Conditional Retrieval
-Initial candidate retrieval queries a PostgreSQL `pgvector` HNSW index ($m=16, ef_{\text{construction}}=64, ef_{\text{search}}=32$). If candidate separation satisfies $\mathcal{H}(\mathbf{s})$, the neural cross-encoder is bypassed, avoiding unnecessary cloud API roundtrips.
+$$S(t) = \max\left(0.01, \; S_0 \cdot \exp\left(-\frac{t}{\tau}\right)\right), \qquad \tau = \frac{T_{\text{eff}}}{3}, \qquad T_{\text{eff}} = 90 \cdot \left(1 + 0.25 \cdot \min(n, 20)\right) \text{ days}$$
 
-#### 4.3 In-Memory Pinned Guardrails Cache
-Pinned memories are mirrored in an in-process LRU cache (`PinnedGuardrailsCache`) with instant cache invalidation upon any mutating mutation (`/pin`, `/memories`, `PATCH`, `DELETE`). `[ASKER CONTEXT]` resolves in **< 0.5ms** with zero database load.
+where $n$ is the number of reinforcements. With $n = 0$, a memory falls to about 5% of its initial strength in 90 days; with $n = 20$ the window grows to 540 days.
 
-### 4.4 Detached Side-Effects
-Memory strength reinforcement, graph spreading activation, and audit logging are decoupled from the HTTP response loop using `queueMicrotask`. The agent receives the assembled prompt immediately.
+### 3.2 Reinforcement
+On recall:
 
-### 4.5 Dual-Layer Code Graph & Cross-Mesh Indexing
-To bridge high-level cognitive memory (ADRs, policies, bug root-causes) with actual source code structure, PCM embeds a high-performance columnar property graph engine (Kùzu). The graph operates as a dual-layer mesh:
-1. **Cognitive Layer**: Node table `Entity(name STRING, entity_type STRING)` and relationship table `RelatesTo(FROM Entity TO Entity, predicate STRING, confidence DOUBLE, source_memory_id STRING, project_scope STRING, created_at INT64)`. Tracks conceptual relations (`SUPERSEDES`, `MANDATES`, `FORBIDDEN_DUE_TO`).
-2. **Structural Code Layer**: Node tables `FileNode(path STRING, language STRING, project_scope STRING)` and `SymbolNode(id STRING, name STRING, kind STRING, file_path STRING, language STRING, project_scope STRING)`. Edge tables `Defines(FROM FileNode TO SymbolNode)`, `Imports(FROM FileNode TO FileNode)`, and `Calls(FROM SymbolNode TO SymbolNode)`. Built via in-memory compiler AST extraction (`ts.createSourceFile`) in single-digit milliseconds.
-3. **Bi-Directional Cross-Layer Bridges**: Relationship table `CrossLayer(FROM Entity TO SymbolNode, predicate STRING, source_memory_id STRING, project_scope STRING, created_at INT64)`. Directly links architectural decisions (`ADR-009`) to specific symbols (`recall`, `KuzuClient`).
+$$S \leftarrow \min\left(1.0, \; S + 0.17 \cdot \ln(1 + r)\right)$$
 
-### 4.6 Physical Directory-Sharded Multi-Tenancy Architecture
-Enterprise multi-tenancy requires strict isolation guarantees. Rather than shared-database logical filtering (which introduces cross-tenant leakage vulnerabilities), PCM implements a thread-safe `TenantDatabaseManager` that assigns each tenant an isolated physical database directory on disk:
-$$\text{Storage Path} = \texttt{/data/kuzu/tenants/}\{\text{tenant\_id}\}\texttt{/kuzu.db}$$
-- **Thread Safety**: Per-tenant read/write locks ensure lock-free concurrent queries across distinct tenants while serializing mutations within each tenant.
-- **Connection Pooling**: LRU-evicted connection pools maintain warm file descriptors for active tenants.
-- **Zero Cross-Talk**: Disk files, buffer caches, and Cypher transaction contexts are completely segregated per tenant with zero additional infrastructure costs.
+where $r$ is the number of retrievals in the current window.
 
-### 4.7 Intent-Gated Latency Fast Path
-Code graph traversals and cross-layer joins are gated behind deterministic query intent classification:
-$$\mathcal{G}(q) = \begin{cases} \text{Code Path (Sub-10ms Kùzu AST + Cross-Layer)}, & q \in \text{CodeIntentPattern} \\ \text{Fast-Path Bypass (0.0ms overhead)}, & \text{otherwise} \end{cases}$$
-Conversational, personal, and administrative queries completely bypass the code graph layer, guaranteeing 0.0ms overhead on non-coding interactions while coding queries receive deep AST symbol and call hierarchy context.
+### 3.3 Spreading activation
+For each associate $j$ of a recalled memory $i$ with reinforcement $\Delta S_i$:
+
+$$S_j \leftarrow \min\left(1.0, \; S_j + 0.10 \cdot w_{ij} \cdot \Delta S_i\right), \qquad w_{ij} = \begin{cases} 1.0 & \text{similarity neighbour} \\ 0.7 & \text{same episode} \end{cases}$$
+
+### 3.4 Scoring
+Each candidate $m$ for query $q$ is scored from its relevance $r(m, q)$ (the reranker's score when reranked, otherwise cosine similarity) and its strength, with **cue-dependent reactivation**: a strong cue restores a decayed memory to full strength, as a specific question brings back an old memory.
+
+$$c = \min\left(1, \left(\frac{r}{0.40}\right)^2\right), \qquad \tilde{S} = S \cdot (1 - c) + c$$
+
+$$\text{Score}(m, q) = 0.75 \cdot r + 0.25 \cdot \tilde{S} + 0.10 \cdot [\text{same project}] + 0.15 \cdot [\text{graph-linked}] + 0.15 \cdot \ell(m, q)$$
+
+where $\ell(m, q) \in [0, 1]$ is the strength of the graph link between $m$ and the query's entities. Candidates below a relevance floor of 0.35 are discarded.
+
+### 3.5 Reranker gating
+The neural reranker is skipped when the vector candidates are already decisive:
+
+$$\text{rerank} = \neg\left( |\mathbf{s}| \le 1 \; \lor \; s_{(1)} \ge 0.88 \; \lor \; s_{(1)} - s_{(2)} \ge 0.15 \right)$$
+
+With high-context candidate pools, the reranker runs on about 98% of recalls; it is worth about 14 accuracy points on LoCoMo.
+
+### 3.6 Recall size
+For a recall of $k$ memories (default 50; compact recall passes $k = 10$): $k$ situational slots, a candidate pool of $\max(50, 2k)$, a prompt budget of $\max(14{,}000, 900k)$ characters, and $\max(3, k/10)$ episode seeds.
+
+### 3.7 Surprisal
+For memory $m$ with family $F(m) = \{ m' : t(m') < t(m), \cos(m, m') \ge 0.45 \}$, the 12 nearest, $|F(m)| \ge 4$: a judge model returns $\sigma(m) \in [0, 1]$, a note on what differs and the usual pattern. $m$ is flagged at recall when $\sigma(m) \ge 0.7$ and $(\{m\} \cup F(m)) \cap R \neq \emptyset$ for the recalled set $R$; flags are ordered by $\min_{x \in \{m\} \cup F(m)} \text{rank}_R(x)$.
+
+### 3.8 Absence
+For a top recalled memory $m$, its routine is $\{m\} \cup F(m)$ plus every memory whose family shares at least two members with it. With entry times $t_1 < \dots < t_N$ ($N \ge 5$), intervals $g_i = t_{i+1} - t_i$, median $\tilde{g}$ and coefficient of variation $\text{cv}(g) < 1$, the routine is flagged when
+
+$$4 \text{ days} \le t_{\text{now}} - t_N \le 365 \text{ days} \quad \text{and} \quad t_{\text{now}} - t_N \ge 3 \cdot \tilde{g}.$$
 
 ---
 
-## 5. Empirical Evaluation & Comparative Benchmarks
+## 4. Implementation
 
-PCM and its unified graph engine (Upgraded PCM) were evaluated across six distinct benchmarking paradigms against leading commercial and open-source platforms: **Mem0 Cloud** (`mem0ai` production SDK), **Zep Cloud** (`@getzep/zep-cloud` Graphiti production SDK), **Obsidian Vault on Disk** (real markdown files via ripgrep), and **Standard Semantic RAG** (dense vector cosine similarity).
+### 4.1 Ingestion
+- **Exact duplicates** reinforce the existing memory without an embedding call.
+- **Near duplicates** ($\cos \ge 0.94$) are merged only when they state the same figures; "ran 5k in 27:10" and "ran 5k in 41:30" are different events.
+- **Embeddings**: OpenAI `text-embedding-3-small` at 768 dimensions, stored as `halfvec(768)` in PostgreSQL with an HNSW index; inputs are capped at 20,000 characters (the full text is stored).
+- **Graph extraction** runs asynchronously after the write; failed extractions are retried by a repair job rather than stored as guesses.
 
-All cloud benchmarks were executed using live API keys, active cloud network round-trips, and real disk vaults.
+### 4.2 Recall pipeline
+Query embedding and graph lookup run in parallel, followed by HNSW search, reranking (DashScope `qwen3-rerank`), scoring, episode expansion and anomaly flags. Median recall latency is about 0.7-1.0 s, dominated by the embedding (~300-400 ms) and reranker (~400-500 ms) calls; scoring, graph and flag queries add tens of milliseconds.
 
----
+### 4.3 Pinned guardrails cache
+Pinned memories are mirrored in an in-process cache, invalidated on every change, so `[ASKER CONTEXT]` costs no database round trip.
 
-### 5.1 Architectural Mechanics Benchmark (Golden Evaluation Suite)
+### 4.4 Detached side effects
+Reinforcement and spreading activation run after the response is returned, off the request path.
 
-Evaluating candidate precision, decay attenuation, and token economy across 6 golden evaluation scenarios (`bun run benchmark`):
+### 4.5 Background jobs
+| Job | Cadence | Purpose |
+| :--- | :--- | :--- |
+| Decay sweep | periodic | Applies the strength function incrementally |
+| Consolidation and demotion | periodic | Consolidates clusters, demotes faded memories |
+| Vector repair | every 10 min | Embeds memories stored without a vector; re-embeds after a model change |
+| Graph repair | every 10 min | Re-extracts memories missing from the graph; rebuilds a lost tenant graph |
+| Surprisal sweep | every 2 min | Judges new memories against their families |
 
-| Architecture | Hit Rate @ 1 | Hit Rate @ 3 | MRR | Tokens/Turn | Recall (p50) | Ingest (p50) | Contradiction |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🏆 **Peripheral Cognitive Mesh (PCM)** | **100.0%** | **100.0%** | **1.000** | **92 tokens** | **< 30ms** | **< 2ms** | **✅ Resolved** |
-| **Temporal Graph (Zep / Graphiti)** | 66.7% | 83.3% | 0.783 | 127 tokens | 155ms – 250ms | 800ms – 1,500ms | ✅ Resolved |
-| **Fact Vector (Mem0)** | 16.7% | 83.3% | 0.478 | 195 tokens | 55ms – 600ms | 800ms – 2,500ms | ❌ Amnesia |
-| **Hybrid RAG (Vector + BM25)** | 66.7% | 83.3% | 0.783 | 264 tokens | 45ms – 80ms | 25ms – 50ms | ✅ Resolved |
-| **Naive RAG (Vector Dump)** | 16.7% | 83.3% | 0.478 | 275 tokens | 35ms – 60ms | 20ms – 40ms | ❌ Amnesia |
+### 4.6 Multi-tenancy
+Postgres rows are scoped per user and organization. Each tenant's graph is a physically separate Kùzu database directory on a persistent volume.
 
----
-
-### 5.2 Live Cloud SDK Head-to-Head (Production APIs)
-
-Executed via real network calls to production cloud endpoints using official client libraries (`bun run benchmark:live`):
-
-| Engine | Write Latency | Recall Latency | Context Tokens | Contradiction? |
-| :--- | :---: | :---: | :---: | :---: |
-| 🏆 **PCM (Local Cognitive Mesh)** | **2.4ms** | **2.2ms** | **69 tokens** | **✅ Resolved (Bun Pinned)** |
-| **Mem0 Cloud (Live SDK)** | 1,788.3ms | 372.3ms | 12 tokens | ❌ Amnesia |
-| **Zep Cloud (Live SDK)** | 667.7ms | 210.1ms | 18 tokens | ❌ Amnesia |
-
-#### Empirical Takeaways:
-- **Write Speed (The Agent Loop Killer)**: Mem0 Cloud incurred **1.79 seconds** per turn because every write forces an LLM fact-extraction prompt. Zep Graphiti took **667.7ms**. PCM wrote in **2.4ms** (**741x faster** than Mem0 and **277x faster** than Zep), making PCM viable for high-frequency autonomous agent tool loops.
-- **Recall Velocity**: PCM resolved in **2.2ms** (**172x faster** than Mem0 and **95x faster** than Zep), operating entirely within interactive developer flow budgets.
+### 4.7 Space
+About 4.5 KB per memory: text 0.48 KB, `halfvec(768)` 2.0 KB, HNSW index and keys 2.06 KB.
 
 ---
 
-### 5.3 Real Human Usage & Multi-Platform Production Benchmark
+## 5. Evaluation
 
-To evaluate performance on real human knowledge, a realistic 11-note Obsidian Vault was created on disk (`vault/`) containing active ADRs, superseded decisions, daily debugging logs (WebSocket drops, Railway IPv6 networking), project specs (`work-api` vs `client-mobile`), and human developer security guardrails (`bun run benchmark:full`):
+### 5.1 Method
+- **Datasets**: LoCoMo (10 conversations; dev split of 4 conversations, held-out test split of 6, 885 questions in categories 1-4), LongMemEval-S, and a synthetic personal-surprisal set (Section 5.6).
+- **Systems** run the production code path: real embeddings, reranker, Postgres and graph.
+- **Answer model**: DeepSeek V4.1 Flash; **judge**: Qwen3.8 Flash. Prompts are copied verbatim from Mem0's published harness (LoCoMo) and the LongMemEval authors' code. Accuracy is the binary "classic" J-score; we also report Mem0's more lenient judge.
+- **Statistics**: paired exact McNemar tests on the same questions. Configurations are chosen on dev and confirmed once on test.
 
-| Memory System | Avg Accuracy | Helpfulness | Security Violations | Avg Tokens | Recall Latency |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| 🏆 **Upgraded PCM (PCM + Kùzu)** | **93.8%** | **100.0%** | **✅ 0 (Safe)** | **192 tok** | **16.1ms** |
-| **PCM (Cognitive Mesh)** | **92.5%** | **100.0%** | **✅ 0 (Safe)** | **133 tok** | **0.9ms** |
-| **Traditional Graph RAG (Kùzu)** | 52.5% | 68.8% | ✅ 0 (Safe) | 72 tok | 78.2ms |
-| **Obsidian Vault on Disk (Ripgrep)** | 36.3% | 38.8% | ✅ 0 (Safe) | 513 tok | 0.2ms |
-| **Mem0 Cloud (Live SDK)** | 20.0% | 35.0% | ⚠️ 1 Leaks | 235 tok | 418.0ms |
-| **Zep Cloud (Live SDK)** | 20.0% | 30.0% | ⚠️ 1 Leaks | 18 tok | 213.2ms |
+### 5.2 LoCoMo
+| System (test split, 885 questions) | Accuracy (95% CI) | Context tokens |
+| :--- | :---: | :---: |
+| Embedding search, top 50 | 77.1% | 1,918 |
+| MemVault, compact recall (k = 10) | 87.3% | ~1,090 |
+| **MemVault, default (k = 50 + episodes)** | **91.9%** (89.9-93.5) | ~2,830 |
+| Full conversation in context (ceiling) | 93.7% (91.9-95.1) | 28,201 |
 
-#### Deep Dive on Human Experience:
-1. **Contradiction Paralysis**: In Obsidian (Grep & Full Note), Mem0, and Traditional Graph RAG, searching for "migration" retrieved *both* the obsolete March UUID decision and the September ULID decision. The model was presented with mutually contradictory instructions. PCM's Ebbinghaus decay naturally reduced the 6-month-old UUID rule ($S \to 0$), delivering unambiguous ULID guidance.
-2. **Context Window Tax**: Obsidian note dumps injected **513 tokens** of raw markdown headings, YAML frontmatter, and boilerplate per query. Upgraded PCM primed the model with structured PAE slots in **192 tokens** (a **62% reduction in context clutter**).
-3. **Protecting Human Invariants**: When asked to "debug by adding logging", Obsidian grep, Mem0 Cloud, and Zep Cloud completely missed the security rule in `preferences.md` because the user never explicitly typed the word "security", causing a **security leak** where the agent logged raw auth tokens. PCM's **Pinned Guardrail Cache (Strength 1.0)** guaranteed the token-masking rule was ALWAYS injected into `[ASKER CONTEXT]`, preventing security vulnerabilities.
+By category (default): multi-hop 87.2%, temporal 92.2%, open-domain 67.9%, single-hop 96.0%. With Mem0's judge the same answers score 94.2%.
 
----
+Contributions measured as paired steps on test: switching to OpenAI embeddings +6.3 points (p = 5e-9), episode context +2.0 (p = 0.03), high-context recall +4.6 (p = 3e-7). The knowledge graph's linked-memory mode added +6.6 points on dev.
 
-### 5.4 Standard Industry Benchmarks: Needle In A Haystack (NIAH) & LoCoMo
+### 5.3 Head-to-head with Mem0 (same harness)
+Mem0's cloud product answered 776 of the 885 test questions; on those:
 
-To evaluate PCM against standard industry and academic memory benchmarks, we executed both the **Needle In A Haystack (NIAH)** and **LoCoMo (Long-Context Conversational Memory)** suites (`bun run benchmark:standard`):
+| System | Accuracy | Context tokens |
+| :--- | :---: | :---: |
+| **MemVault default** | **91.8%** | ~2,830 |
+| Mem0 cloud, top 200 | 89.9% | 6,771 |
+| Mem0 cloud, top 50 | 85.6% | 1,616 |
+| Mem0 cloud, top 10 | 75.3% | — |
 
-#### 1. Needle In A Haystack (NIAH) Retrieval
-A specific secret internal authentication key (`sk_live_mesh_99812_corp`) was placed at 5 depths (0%, 25%, 50%, 75%, 100%) across varying haystack sizes of technical distractor memories:
+MemVault vs Mem0 top 200: p = 0.11 (not significant). Vs Mem0 top 50: p = 6e-8.
 
-| Memory Engine | 25 Memories | 50 Memories | 100 Memories | 250 Memories | Avg Retrieval Latency |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| 🏆 **PCM (Cognitive Mesh)** | **100%** | **100%** | **100%** | **100%** | **0.4ms** |
-| **Standard Semantic RAG (Vector-Only)** | **100%** | **100%** | **100%** | **100%** | **0.2ms** |
-| **Mem0 Cloud (Live SDK)** | **100%** | 100%* | 100%* | 100%* | 485.7ms |
-| **Zep Cloud (Live SDK)** | **100%** | 100%* | 100%* | 100%* | 235.0ms |
-| **Obsidian Vault (Ripgrep)** | 40% | 20% | 20% | 20% | **0.1ms** |
+Published LoCoMo results from other vendors use different answer models, judges and prompts and are not comparable to these numbers: Zep 94.7% (an independent re-run measured 75.1%), Mem0 92.5%, ByteRover 92.2%, Letta 74.0%.
 
-*Takeaway*: On isolated, non-contradictory factoid needles, all vector-based engines (PCM, Semantic RAG, Mem0, Zep) achieve 100% Top-1 recall, while lexical ripgrep collapses to 20% as distractor noise scales. However, Mem0 and Zep require 485.7ms and 235.0ms per recall (up to **1,214x slower** than PCM at 0.4ms), and their ~1.8s/write cloud LLM overhead makes continuous high-volume ingestion intractable. (*50-250 scales projected from live 25-item test given cloud write-time limits).
+### 5.4 LongMemEval (knowledge updates only)
+On the 72 knowledge-update questions of LongMemEval-S (does memory return the newest version of a changed fact?), split into fixed halves: 97.2% on the dev half (the newest evidence was retrieved for 36 of 36 questions) and 91.7% on the held-out half. The full benchmark has not been run.
 
-#### 2. LoCoMo (Long-Context Conversational Memory)
-Evaluated across 10 multi-session conversational scenarios spanning the four canonical LoCoMo dimensions:
+### 5.5 Lifecycle
+A 180-day simulation on the LoCoMo dev split: half of the questions are asked on a schedule (production recall, with reinforcement and spreading activation), the clock advances daily, production decay and pruning run each day, and the other half is evaluated at the end.
 
-| Memory Engine | Overall LoCoMo | Single-Hop (3) | Temporal Updates (3) | Multi-Hop Synthesis (2) | Pinned Invariants (2) | Avg Tokens | Avg Latency |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🏆 **Upgraded PCM (PCM + Kùzu)** | **87.5%** | **91.7%** | **83.3%** | **87.5%** | **87.5%** | **201 tok** | **14.0ms** |
-| **PCM (Cognitive Mesh)** | **85.0%** | **90.0%** | **80.0%** | **85.0%** | **85.0%** | **146 tok** | **0.2ms** |
-| **Standard Semantic RAG** | 57.5% | 78.3% | 56.7% | 67.5% | 17.5% | 45 tok | 0.1ms |
-| **Obsidian Vault (Ripgrep)** | 55.0% | 76.7% | 53.3% | 65.0% | 15.0% | 199 tok | 1.2ms |
-| **Mem0 Cloud (Live SDK)** | 15.0% | 15.0% | 15.0% | 15.0% | 15.0% | 0 tok | 513.7ms |
-| **Zep Cloud (Live SDK)** | 15.0% | 15.0% | 15.0% | 15.0% | 15.0% | 0 tok | 249.3ms |
+| Forgetting policy after 180 days | Accuracy on never-asked questions |
+| :--- | :---: |
+| Fresh store (no time elapsed) | 85.7% |
+| Delete faded memories | 60.6% (p = 1e-16) |
+| Delete, with stronger spreading activation | 62.5% |
+| **Demote faded memories (production)** | **86.0%** (p = 1.0 vs fresh) |
 
----
+Spreading activation alone kept more of the not-yet-asked evidence alive (58.3% vs 55.8% without it) but cannot compensate for deletion. Consolidation, measured separately at production defaults on dev, raised accuracy from 90.7% to 92.7% (p = 0.024).
 
-### 5.5 Multi-Session Conversational Benchmark (Live Cross-Platform)
+### 5.6 Surprisal and absence (synthetic)
+No public benchmark measures whether a memory system helps an agent notice what is out of the ordinary, so we built one. 24 synthetic personas (12 dev, 12 test), each with 8 personal routines of 8-12 entries (runs, sleep, bills, calls home, groceries) and about 30 unrelated memories. Half the routines contain one planted outlier among their last four entries (a value, category or content change, stated matter-of-factly); in a second version, half of the remaining routines stop well before the question. Each routine has an everyday request, asked the day after, that never mentions the outlier. The dataset is generated once and frozen.
 
-Evaluated across dynamic conversational sessions testing temporal migration, privacy enforcement, multi-hop debugging synthesis, and cross-session persistence (`bun run benchmark:conversational`):
+| Held-out test split | Without flags | With flags |
+| :--- | :---: | :---: |
+| Answers accounting for a planted outlier | 35.4% | **60.4%** (p = 0.012) |
+| Same, second independent ingest | 41.7% | 50.0% (p = 0.42) |
+| Answers noticing a stopped routine | 4.5% | **54.5%** (p = 0.001) |
+| Answers inventing an anomaly (control routines) | 0-2.1% | 3.8-4.2% (n.s.) |
 
-| Memory System | Avg Accuracy | Helpfulness | Privacy Violations | Avg Tokens | Recall Latency |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| 🏆 **Upgraded PCM (PCM + Kùzu)** | **100.0%** | **100.0%** | **✅ 0 (Zero Violations)** | **125 tok** | **14.8ms** |
-| **Obsidian Vault on Disk (Ripgrep)** | 53.3% | 55.0% | ⚠️ 1 Leak (Psychiatric) | 180 tok | **1.1ms** |
-| **Mem0 Cloud (Live SDK)** | 20.0% | 35.0% | ⚠️ 1 Leak (Psychiatric) | 0 tok | 534.0ms |
-| **Zep Cloud (Live SDK)** | 20.0% | 35.0% | ⚠️ 1 Leak (Psychiatric) | 23 tok | 215.6ms |
+Without flags, the outlier was already in the agent's context 90-95% of the time; agents simply did not notice it. The detector flags 77-100% of value outliers and 84-93% of content outliers but only 53-58% of category changes (a different store or person), and flags a normal entry in about 1-2% of judged memories. Every variant that caught more category changes (three prompt designs and a structural attribute check) also flagged more normal entries, so the precise detector is the one in production. No continuing routine was flagged as having stopped.
 
-#### Key Takeaways:
-- **Flawless Privacy Enforcement**: When sensitive health and psychiatric instructions were tagged confidential, both Mem0 and Zep allowed sensitive diagnostic data to leak into raw responses, and Obsidian grep leaked notes indiscriminately. PCM's confidential invariant redaction layer sanitized sensitive relations automatically with 0 privacy violations.
-- **100% Conversational Accuracy**: Upgraded PCM achieved perfect accuracy across all sessions, outperforming Obsidian by 1.88x and Mem0/Zep by 5.0x.
+The same test exposed a data-integrity problem in near-duplicate merging (routine entries with different figures were merged, and the older entry was re-dated), which is why near duplicates must now state the same figures.
 
----
+### 5.7 What did not help
+Measured on dev against the production configuration, all not significant: multi-hop graph walks, canonical entity merging, sibling ("swarm") scouting, adaptive result breadth, candidate pools of 100 or 150, LLM-written summaries in place of source memories (-7 points), a faster third-party reranker (no single relevance floor matched both accuracy and off-topic precision), and stored associative edges (about half of storage, no accuracy effect).
 
-### 5.6 Production Code Graph & Multi-Tenancy Architecture Benchmark
-
-Tested live against real production codebases (`app.skillvault.dev` production cluster) evaluating AST compiler parsing, symbol hierarchy extraction, cross-layer relational queries, and tenant directory isolation:
-
-| Evaluation Metric | Measured Result | Production Invariant / Target | Status |
-| :--- | :---: | :---: | :---: |
-| **AST Compilation & Symbol Extraction** | **341.1ms** (5 files, 21 symbols, 249 calls, 12 imports) | < 1,000ms for active workspace | ✅ PASSED |
-| **Cross-Layer Cypher Query Latency** | **83.0ms** (4 cross-layer edges traversed) | < 150ms budget | ✅ PASSED |
-| **Code Path Intent Gating** | **0.0ms** bypass overhead for conversational tasks | 0.0ms non-coding overhead | ✅ PASSED |
-| **Physical Multi-Tenant Directory Isolation** | **100% Segregation** (`/tenants/{id}/kuzu.db`) | Zero cross-tenant data leakage | ✅ PASSED |
-| **Live Production Integration Suite** | **100.0% Pass Rate (5/5 tests)** | Zero regression in production | ✅ PASSED |
-
----
-
-### 5.7 Summary of Empirical Superiority
-
-By integrating mathematical Ebbinghaus decay, pinned guardrails, an emergent associative mesh, dual-layer Kùzu code graph bridges, and physical multi-tenant partitioning, the **Peripheral Cognitive Mesh (PCM)** consistently outperforms every existing platform in accuracy, helpfulness, privacy safety, token efficiency, and write/recall velocity across all evaluated benchmarks:
-
-| Capability / Benchmark | Upgraded PCM | PCM (Mesh) | Mem0 Cloud | Zep Cloud | Obsidian | Naive RAG |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Conversational Benchmark** | **100.0%** | 93.3% | 20.0% | 20.0% | 53.3% | 40.0% |
-| **Human Architectural Evals** | **93.8%** | 92.5% | 20.0% | 20.0% | 36.3% | 30.0% |
-| **LoCoMo Conversational Benchmark** | **87.5%** | 85.0% | 15.0% | 15.0% | 55.0% | 57.5% |
-| **Needle In A Haystack (250 items)** | **100.0%** | **100.0%** | **100.0%*** | **100.0%*** | 20.0% | 100.0% |
-| **Write Ingestion Latency** | **< 3ms** | **2.4ms** | 1,788.3ms | 667.7ms | File I/O | 20ms |
-| **Recall Query Latency** | **14.8ms** | **2.2ms** | 372.3ms | 210.1ms | 1.1ms | 35ms |
-| **Privacy & Invariant Guardrails** | **0 Leaks** | **0 Leaks** | ⚠️ Leaks | ⚠️ Leaks | ⚠️ Leaks | ⚠️ Leaks |
-| **Multi-Tenant Physical Isolation** | **✅ Complete** | **✅ Complete** | ❌ Shared | ❌ Shared | ❌ Local Only | ❌ Logical |
+### 5.8 Limitations
+- LoCoMo results are in the same band as the best published systems but do not beat their self-reported numbers, which use different answer models and judges.
+- Only the knowledge-update category of LongMemEval has been measured.
+- The surprisal results come from a synthetic dataset we built; they demonstrate the mechanism, not real-world prevalence.
+- Category changes are the weakest kind of surprisal.
+- Recall latency (about 0.7-1.0 s) is dominated by hosted embedding and reranking calls.
 
 ---
 
@@ -381,6 +281,7 @@ By integrating mathematical Ebbinghaus decay, pinned guardrails, an emergent ass
   title={Peripheral Cognitive Mesh (PCM): A Biologically-Inspired Memory Architecture for Autonomous AI Agents},
   author={SkillVault Engineering},
   year={2026},
-  url={https://github.com/anthonylee991/pcm}
+  version={2.0},
+  url={https://skillvault.dev/pcm-spec}
 }
 ```
