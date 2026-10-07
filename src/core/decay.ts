@@ -1,6 +1,25 @@
 import type { Importance } from "../schema/index.js";
 
-export const DEFAULT_DECAY_RATE = 0.05; // ~14 day effective half-life
+/**
+ * Decay constants, per PCM-SPEC.md section 3.1.
+ *
+ *   T_eff = T_DECAY_DAYS * (1 + SAVINGS_COEFFICIENT * min(n, SAVINGS_CAP))
+ *   tau   = T_eff / TAU_DIVISOR
+ *   S(t)  = clamp(S_0 * exp(-t / tau))
+ *
+ * `decayRate` in calculateDecayedStrength is 1/tau at n = 0, i.e.
+ * TAU_DIVISOR / T_DECAY_DAYS, which is what makes DEFAULT_DECAY_RATE below
+ * equal 1/30 per day. Keeping the parameter as a rate preserves the existing
+ * signature while making its value derivable from the spec rather than
+ * arbitrary.
+ */
+export const T_DECAY_DAYS = 90;
+export const TAU_DIVISOR = 3;
+export const SAVINGS_COEFFICIENT = 0.25;
+export const SAVINGS_CAP = 20;
+
+/** 1/30 per day: tau = 30 days at n = 0, so exp(-90/30) = exp(-3) at 90 days. */
+export const DEFAULT_DECAY_RATE = TAU_DIVISOR / T_DECAY_DAYS;
 export const PINNED_STRENGTH = 1.0;
 export const HIGH_INITIAL_STRENGTH = 0.85;
 export const DEFAULT_INITIAL_STRENGTH = 0.70;
@@ -37,8 +56,17 @@ export function getInitialStrength(importance: Importance, text?: string): numbe
 }
 
 /**
- * Calculates decayed strength using Ebbinghaus exponential decay model:
- * S(t) = S_0 * exp(-lambda * delta_t / (1 + ln(1 + B)))
+ * Calculates decayed strength using the Ebbinghaus exponential decay model of
+ * PCM-SPEC.md section 3.1:
+ *
+ *   S(t) = S_0 * exp(-lambda * delta_t / (1 + 0.25 * min(B, 20)))
+ *
+ * where lambda = TAU_DIVISOR / T_DECAY_DAYS = 1/30 per day, so tau is 30 days
+ * unreinforced and 180 days at the B = 20 cap (T_eff = 540, tau = 540/3).
+ *
+ * Note this savings factor is linear and capped, and is distinct from the
+ * logarithmic *retrieval boost* of section 3.2 (delta-S = 0.17 * ln(1 + n)),
+ * which replenishes stored strength on access rather than lengthening tau.
  */
 export function calculateDecayedStrength(
   initialStrength: number,
@@ -67,7 +95,14 @@ export function calculateDecayedStrength(
   }
 
   const elapsedDays = Math.max(0, elapsedMs / (1000 * 60 * 60 * 24));
-  const savingsFactor = 1.0 + Math.log(1.0 + Math.max(0, boostCount));
+  // Savings effect, per spec 3.1: T_eff = T_decay * (1 + 0.25 * min(n, 20)),
+  // i.e. linear in retrieval count and capped at 20 retrievals for a sixfold
+  // time constant. A logarithmic factor grows far too slowly to offset linear
+  // decay -- under 1 + ln(1 + n) no retrieval count keeps a default-importance
+  // memory above the stale threshold at one year, which defeats the purpose of
+  // modelling reinforcement at all.
+  const savingsFactor =
+    1.0 + SAVINGS_COEFFICIENT * Math.min(Math.max(0, boostCount), SAVINGS_CAP);
   const effectiveDecay = (decayRate * elapsedDays) / savingsFactor;
   const decayed = initialStrength * Math.exp(-effectiveDecay);
 

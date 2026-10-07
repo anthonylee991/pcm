@@ -191,3 +191,66 @@ describe("PCM Standalone Engine Tests", () => {
     expect(calculateDecayedStrength(init, -30 * 24 * 60 * 60 * 1000)).toBe(init);
   });
 });
+
+/**
+ * PCM-SPEC.md section 3.1 states the decay model and then works it out
+ * numerically. These tests assert the spec's own stated numbers, so they are a
+ * conformance check rather than an interpretation:
+ *
+ *   T_eff = T_decay * (1 + 0.25 * min(n, 20))   where T_decay = 90 days
+ *   tau   = T_eff / 3
+ *   S(t)  = max(0.01, min(1.0, S_0 * exp(-t / tau)))
+ *
+ *   "Proof: When n = 0, tau = 30. At t = 90 days, exp(-90 / 30) = exp(-3)
+ *    ~= 0.0498 ... When n = 20, T_eff = 90 * (1 + 5) = 540 days, increasing
+ *    structural half-life sixfold."
+ */
+describe("Decay conformance with PCM-SPEC.md section 3.1", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const init = 0.5; // arbitrary, below 1.0 so no clamping interferes
+
+  test("n=0 at t=90d decays by exp(-3), the factor the spec proves", () => {
+    const factor = calculateDecayedStrength(init, 90 * DAY, 0, "default") / init;
+    expect(factor).toBeCloseTo(Math.exp(-3), 4);
+  });
+
+  test("tau is 30 days at n=0, so t=tau decays by exactly 1/e", () => {
+    const factor = calculateDecayedStrength(init, 30 * DAY, 0, "default") / init;
+    expect(factor).toBeCloseTo(Math.exp(-1), 4);
+  });
+
+  test("n=20 lengthens the time constant sixfold, per the spec's T_eff = 540", () => {
+    // With tau scaled 6x, reaching the same decay factor takes 6x the elapsed time.
+    const at90unboosted = calculateDecayedStrength(init, 90 * DAY, 0, "default") / init;
+    const at540boosted = calculateDecayedStrength(init, 540 * DAY, 20, "default") / init;
+    expect(at540boosted).toBeCloseTo(at90unboosted, 4);
+  });
+
+  test("the savings multiplier is linear in n, not logarithmic", () => {
+    // tau(n) / tau(0) must equal 1 + 0.25n exactly. A logarithmic savings
+    // factor gives 1 + ln(1+n), which diverges from this immediately.
+    const tauRatio = (n: number) => {
+      const t = 30 * DAY;
+      // S = S0 * exp(-t/tau)  =>  tau = -t / ln(S/S0)
+      const f = calculateDecayedStrength(init, t, n, "default") / init;
+      return -1 / Math.log(f); // tau expressed in units of t
+    };
+    const base = tauRatio(0);
+    for (const n of [1, 4, 8, 12, 20]) {
+      expect(tauRatio(n) / base).toBeCloseTo(1 + 0.25 * n, 4);
+    }
+  });
+
+  test("the savings multiplier is capped at n=20", () => {
+    const at20 = calculateDecayedStrength(init, 365 * DAY, 20, "default");
+    const at100 = calculateDecayedStrength(init, 365 * DAY, 100, "default");
+    expect(at100).toBeCloseTo(at20, 10);
+  });
+
+  test("a reinforced memory survives a year, which is the point of the savings effect", () => {
+    // The spec's sixfold tau (540 days) must keep a fully-reinforced default
+    // memory above the 0.05 stale threshold at one year. Under a logarithmic
+    // savings factor this is unreachable at any n.
+    expect(calculateDecayedStrength(init, 365 * DAY, 20, "default")).toBeGreaterThan(0.05);
+  });
+});
